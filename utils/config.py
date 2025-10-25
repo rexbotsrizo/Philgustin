@@ -16,25 +16,17 @@ def load_config():
     Returns a dict with keys: openai_api_key, model, temperature, max_tokens
     """
 
-    # Best-effort: prefer Streamlit secrets when running inside Streamlit
-    try:
-        import streamlit as _st
-        secrets = getattr(_st, "secrets", None)
-    except Exception:
-        secrets = None
-
     # Load .env into environment as fallback
     load_dotenv()
 
     def _get(key, default=None):
-        # Check streamlit secrets first
-        if secrets and key in secrets:
-            return secrets.get(key)
-        # Then environment
-        val = os.getenv(key)
-        if val is not None:
-            return val
-        return default
+        # Try Streamlit secrets first (only on Streamlit Cloud)
+        try:
+            import streamlit as _st
+            return _st.secrets.get(key, os.getenv(key, default))
+        except Exception:
+            # Not on Streamlit or no secrets file - use env vars
+            return os.getenv(key, default)
 
     config = {
         "openai_api_key": _get("OPENAI_API_KEY", ""),
