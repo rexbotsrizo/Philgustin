@@ -9,6 +9,8 @@ from components.proposal_generator import ProposalGenerator
 from components.visualizations import create_proposal_visualizations
 from utils.config import load_config
 from utils.lead_manager import LeadDataManager
+from utils.conversation_manager import ConversationManager
+from utils.pdf_generator import generate_proposal_pdf
 
 # Page configuration
 st.set_page_config(
@@ -30,10 +32,12 @@ if "chatbot" not in st.session_state:
     st.session_state.chatbot = MortgageChatbot(config)
 if "lead_manager" not in st.session_state:
     st.session_state.lead_manager = LeadDataManager()
+if "conversation_manager" not in st.session_state:
+    st.session_state.conversation_manager = ConversationManager()
 if "current_lead_id" not in st.session_state:
     st.session_state.current_lead_id = None
 if "view_mode" not in st.session_state:
-    st.session_state.view_mode = "chat"  # chat, manage_leads, or import_lead
+    st.session_state.view_mode = "chat"  # chat, manage_leads, import_lead, or conversations
 
 # Header
 col1, col2, col3 = st.columns([1, 4, 2])
@@ -46,7 +50,7 @@ with col3:
     st.markdown("### Navigation")
     view_mode = st.radio(
         "Select Mode:",
-        ["💬 Chat", "📋 Manage Leads", "📥 Import Lead"],
+        ["💬 Chat", "📋 Manage Leads", "📥 Import Lead", "💾 Conversations"],
         label_visibility="collapsed",
         key="nav_radio"
     )
@@ -55,6 +59,8 @@ with col3:
         st.session_state.view_mode = "chat"
     elif view_mode == "📋 Manage Leads":
         st.session_state.view_mode = "manage_leads"
+    elif view_mode == "💾 Conversations":
+        st.session_state.view_mode = "conversations"
     else:
         st.session_state.view_mode = "import_lead"
 
@@ -101,11 +107,51 @@ with st.sidebar:
         heloan_cost2 = st.number_input("30-Year Costs", value=2500, step=100, key="heloan_c2")
     
     if st.button("🔄 Reset Conversation"):
+        # Save conversation before resetting
+        if st.session_state.messages:
+            st.session_state.conversation_manager.save_conversation(
+                lead_id=st.session_state.current_lead_id,
+                lead_name=st.session_state.lead_data.get("name", "Unknown"),
+                messages=st.session_state.messages,
+                lead_data=st.session_state.lead_data,
+                proposal_generated=st.session_state.proposal_generated
+            )
+        
         st.session_state.messages = []
         st.session_state.lead_data = {}
         st.session_state.proposal_generated = False
         st.session_state.current_lead_id = None
+        st.success("✅ Conversation saved and reset!")
         st.rerun()
+    
+    # Download conversation history
+    st.divider()
+    st.subheader("💾 Download Conversations")
+    
+    stats = st.session_state.conversation_manager.get_statistics()
+    st.metric("Total Conversations", stats["total_conversations"])
+    st.metric("With Proposals", stats["with_proposals"])
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📥 Download All (JSON)"):
+            json_data = st.session_state.conversation_manager.export_to_json()
+            st.download_button(
+                label="💾 Save JSON File",
+                data=json_data,
+                file_name=f"conversations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+    
+    with col2:
+        if st.button("📊 Download Summary (CSV)"):
+            csv_data = st.session_state.conversation_manager.export_to_csv()
+            st.download_button(
+                label="💾 Save CSV File",
+                data=csv_data,
+                file_name=f"conversation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
 
 # Main content area based on view mode
 if st.session_state.view_mode == "manage_leads":
@@ -276,6 +322,116 @@ elif st.session_state.view_mode == "import_lead":
             else:
                 st.error("❌ Please fill in all required fields (*)")
 
+elif st.session_state.view_mode == "conversations":
+    # ==================== CONVERSATIONS HISTORY VIEW ====================
+    st.header("💾 Conversation History")
+    
+    all_conversations = st.session_state.conversation_manager.get_all_conversations()
+    
+    if not all_conversations:
+        st.info("No conversations recorded yet. Start chatting to create conversation history!")
+    else:
+        # Statistics
+        stats = st.session_state.conversation_manager.get_statistics()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Conversations", stats["total_conversations"])
+        with col2:
+            st.metric("With Proposals", stats["with_proposals"])
+        with col3:
+            st.metric("Avg Messages", stats["avg_messages_per_conversation"])
+        with col4:
+            st.metric("Today", stats["conversations_by_date"].get(datetime.now().strftime("%Y-%m-%d"), 0))
+        
+        st.divider()
+        
+        # Export buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            json_data = st.session_state.conversation_manager.export_to_json()
+            st.download_button(
+                label="📥 Download All Conversations (JSON)",
+                data=json_data,
+                file_name=f"all_conversations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                type="primary"
+            )
+        
+        with col2:
+            csv_data = st.session_state.conversation_manager.export_to_csv()
+            st.download_button(
+                label="📊 Download Summary (CSV)",
+                data=csv_data,
+                file_name=f"conversation_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        st.divider()
+        st.subheader("Conversation List")
+        
+        # Display conversations (most recent first)
+        for conv in reversed(all_conversations):
+            conv_id = conv.get("conversation_id", "Unknown")
+            lead_name = conv.get("lead_name", "Unknown")
+            timestamp = conv.get("timestamp", "")
+            msg_count = conv.get("message_count", 0)
+            proposal_gen = conv.get("proposal_generated", False)
+            
+            # Format timestamp
+            try:
+                dt = datetime.fromisoformat(timestamp)
+                formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                formatted_time = timestamp
+            
+            with st.expander(f"💬 {lead_name} - {formatted_time} ({msg_count} messages)"):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write(f"**Conversation ID:** {conv_id}")
+                    st.write(f"**Lead:** {lead_name} (ID: {conv.get('lead_id', 'N/A')})")
+                    st.write(f"**Date/Time:** {formatted_time}")
+                    st.write(f"**Messages:** {msg_count}")
+                    st.write(f"**Proposal Generated:** {'✅ Yes' if proposal_gen else '❌ No'}")
+                    
+                    # Show lead data
+                    lead_data = conv.get("lead_data", {})
+                    if lead_data:
+                        st.write("**Lead Info:**")
+                        st.write(f"- Property Value: ${lead_data.get('property_value', 0):,}")
+                        st.write(f"- Current Balance: ${lead_data.get('current_balance', 0):,}")
+                        st.write(f"- Cash Out: ${lead_data.get('cash_out_amount', 0):,}")
+                        st.write(f"- Veteran: {lead_data.get('is_veteran', 'N/A')}")
+                
+                with col2:
+                    # Download individual conversation transcript
+                    transcript = st.session_state.conversation_manager.export_conversation_detail(conv_id)
+                    if transcript:
+                        st.download_button(
+                            label="📄 Download Transcript",
+                            data=transcript,
+                            file_name=f"transcript_{conv_id}.txt",
+                            mime="text/plain",
+                            key=f"download_{conv_id}"
+                        )
+                
+                # Show conversation messages
+                if st.checkbox("Show Conversation", key=f"show_conv_{conv_id}"):
+                    st.markdown("---")
+                    st.markdown("**Conversation Messages:**")
+                    for i, msg in enumerate(conv.get("messages", []), 1):
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        
+                        if role == "user":
+                            st.markdown(f"**[{i}] 👤 User:**")
+                        else:
+                            st.markdown(f"**[{i}] 🤖 Assistant:**")
+                        
+                        st.markdown(f"> {content}")
+                        st.markdown("")
+
 else:
     # ==================== CHAT VIEW ====================
     st.header("💬 Chat with Phil's AI Assistant")
@@ -315,6 +471,16 @@ else:
                 # Generate proposal if ready
                 if response.get("generate_proposal", False):
                     st.session_state.proposal_generated = True
+                    
+                    # Auto-save conversation when proposal is generated
+                    conv_id = st.session_state.conversation_manager.save_conversation(
+                        lead_id=st.session_state.current_lead_id,
+                        lead_name=st.session_state.lead_data.get("name", "Unknown"),
+                        messages=st.session_state.messages + [{"role": "assistant", "content": response["message"]}],
+                        lead_data=st.session_state.lead_data,
+                        proposal_generated=True
+                    )
+                    st.toast(f"✅ Conversation saved: {conv_id}", icon="💾")
         
         # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response["message"]})
@@ -341,11 +507,16 @@ else:
         # Display visualizations
         create_proposal_visualizations(proposals, st.session_state.lead_data)
         
-        # Download button for proposal
-        st.download_button(
-            label="📥 Download Full Proposal (PDF)",
-            data="Proposal PDF would be generated here",
-            file_name=f"mortgage_proposal_{st.session_state.lead_data.get('name', 'client')}.pdf",
-            mime="application/pdf",
-            help="Download a PDF version of your proposals"
-        )
+        # Download button for proposal - Generate actual PDF
+        try:
+            pdf_bytes = generate_proposal_pdf(st.session_state.lead_data, proposals)
+            st.download_button(
+                label="📥 Download Full Proposal (PDF)",
+                data=pdf_bytes,
+                file_name=f"mortgage_proposal_{st.session_state.lead_data.get('name', 'client').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                help="Download a professionally formatted PDF of your proposals"
+            )
+        except Exception as e:
+            st.error(f"Error generating PDF: {str(e)}")
+            st.info("PDF generation requires the reportlab package. Install it with: pip install reportlab")
