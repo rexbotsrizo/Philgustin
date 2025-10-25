@@ -49,6 +49,10 @@ class ProposalGenerator:
         # Effective loan amount after fees
         effective_amount = loan_amount - loan_costs
         
+        # Prevent division by zero
+        if effective_amount <= 0 or term_months <= 0:
+            return interest_rate  # Return base rate if calculation not possible
+        
         # This is a simplified APR calculation
         # Real APR calculation is more complex
         total_interest = (self.calculate_monthly_payment(loan_amount, interest_rate, term_months) * term_months) - loan_amount
