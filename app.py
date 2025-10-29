@@ -11,6 +11,7 @@ from utils.config import load_config
 from utils.lead_manager import LeadDataManager
 from utils.conversation_manager import ConversationManager
 from utils.pdf_generator import generate_proposal_pdf
+from utils.campaign_manager import CampaignManager
 
 # Page configuration
 st.set_page_config(
@@ -34,10 +35,14 @@ if "lead_manager" not in st.session_state:
     st.session_state.lead_manager = LeadDataManager()
 if "conversation_manager" not in st.session_state:
     st.session_state.conversation_manager = ConversationManager()
+if "campaign_manager" not in st.session_state:
+    st.session_state.campaign_manager = CampaignManager()
 if "current_lead_id" not in st.session_state:
     st.session_state.current_lead_id = None
 if "view_mode" not in st.session_state:
-    st.session_state.view_mode = "chat"  # chat, manage_leads, import_lead, or conversations
+    st.session_state.view_mode = "chat"  # chat, manage_leads, import_lead, conversations, or campaigns
+if "lead_just_loaded" not in st.session_state:
+    st.session_state.lead_just_loaded = False
 
 # Header
 col1, col2, col3 = st.columns([1, 4, 2])
@@ -50,7 +55,7 @@ with col3:
     st.markdown("### Navigation")
     view_mode = st.radio(
         "Select Mode:",
-        ["💬 Chat", "📋 Manage Leads", "📥 Import Lead", "💾 Conversations"],
+        ["💬 Chat", "📋 Manage Leads", "📥 Import Lead", "💾 Conversations", "📧 Campaigns"],
         label_visibility="collapsed",
         key="nav_radio"
     )
@@ -61,6 +66,8 @@ with col3:
         st.session_state.view_mode = "manage_leads"
     elif view_mode == "💾 Conversations":
         st.session_state.view_mode = "conversations"
+    elif view_mode == "📧 Campaigns":
+        st.session_state.view_mode = "campaigns"
     else:
         st.session_state.view_mode = "import_lead"
 
@@ -196,11 +203,15 @@ if st.session_state.view_mode == "manage_leads":
                             "current_balance": lead.get('current_balance'),
                             "cash_out_amount": lead.get('cash_out_amount'),
                             "is_veteran": lead.get('is_veteran'),
-                            "annual_income": lead.get('annual_income')
+                            "annual_income": lead.get('annual_income'),
+                            "address": lead.get('address', '')
                         }
                         st.session_state.current_lead_id = lead_id
                         st.session_state.view_mode = "chat"
                         st.session_state.proposal_generated = True
+                        st.session_state.lead_just_loaded = True
+                        # Clear previous messages to start fresh
+                        st.session_state.messages = []
                         st.rerun()
                 
                 with col3:
@@ -432,6 +443,181 @@ elif st.session_state.view_mode == "conversations":
                         st.markdown(f"> {content}")
                         st.markdown("")
 
+# ================================================================================
+# CAMPAIGNS VIEW
+# ================================================================================
+elif st.session_state.view_mode == "campaigns":
+    st.header("📧 Campaign Management")
+    st.caption("Automated drip campaigns based on Phil's 57-step nurture sequence")
+    
+    tab1, tab2, tab3 = st.tabs(["🎯 Active Campaigns", "➕ Create Campaign", "📊 Campaign Stats"])
+    
+    with tab1:
+        st.subheader("Active Campaigns")
+        
+        # Load all leads to show campaign status
+        leads = st.session_state.lead_manager.get_all_leads()
+        
+        if not leads:
+            st.info("No leads available. Import leads first from the Import Lead tab.")
+        else:
+            for lead_id, lead in leads.items():
+                campaign = st.session_state.campaign_manager.get_campaign(lead_id)
+                
+                with st.expander(f"🏠 {lead.get('name', 'Unknown')} - {lead.get('address', 'No address')}", 
+                                expanded=campaign is not None and campaign.get("status") == "active"):
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    with col1:
+                        st.write(f"**Property Value:** ${lead.get('property_value', 0):,}")
+                        st.write(f"**Cash Out:** ${lead.get('cash_out_amount', 0):,}")
+                        st.write(f"**Email:** {lead.get('email', 'N/A')}")
+                    
+                    with col2:
+                        if campaign:
+                            status = campaign.get("status", "unknown")
+                            status_emoji = "✅" if status == "active" else "⏸️" if status == "paused" else "🛑"
+                            st.write(f"**Status:** {status_emoji} {status.upper()}")
+                            
+                            completed = len(campaign.get("completed_touchpoints", []))
+                            total = len(campaign.get("scheduled_touchpoints", []))
+                            st.progress(completed / total if total > 0 else 0)
+                            st.caption(f"{completed} / {total} touchpoints sent")
+                        else:
+                            st.write("**Status:** ⚪ No campaign")
+                    
+                    with col3:
+                        if campaign:
+                            if campaign.get("status") == "active":
+                                if st.button("⏸️ Pause", key=f"pause_{lead_id}"):
+                                    st.session_state.campaign_manager.update_campaign_status(lead_id, "paused")
+                                    st.rerun()
+                            else:
+                                if st.button("▶️ Resume", key=f"resume_{lead_id}"):
+                                    st.session_state.campaign_manager.update_campaign_status(lead_id, "active")
+                                    st.rerun()
+                            
+                            if st.button("🛑 Stop", key=f"stop_{lead_id}"):
+                                st.session_state.campaign_manager.update_campaign_status(lead_id, "stopped")
+                                st.rerun()
+                        else:
+                            if st.button("🚀 Start Campaign", key=f"start_{lead_id}"):
+                                # Determine campaign type based on cash out
+                                campaign_type = "new_lead_cashout" if lead.get("cash_out_amount", 0) > 0 else "new_lead_cashout"
+                                st.session_state.campaign_manager.create_campaign(lead_id, campaign_type, lead)
+                                st.success(f"Campaign started for {lead.get('name')}!")
+                                st.rerun()
+                    
+                    # Show upcoming touchpoints if campaign exists
+                    if campaign and campaign.get("status") == "active":
+                        st.divider()
+                        st.write("**📅 Upcoming Touchpoints:**")
+                        
+                        pending = st.session_state.campaign_manager.get_pending_touchpoints(lead_id)
+                        upcoming = [tp for tp in campaign.get("scheduled_touchpoints", []) 
+                                  if tp.get("status") == "pending"][:5]  # Next 5
+                        
+                        if not upcoming:
+                            st.info("All touchpoints completed!")
+                        else:
+                            for tp in upcoming:
+                                scheduled_time = datetime.fromisoformat(tp["scheduled_time"])
+                                is_ready = scheduled_time <= datetime.now(scheduled_time.tzinfo)
+                                
+                                status_icon = "🔴 READY" if is_ready else "🟡 SCHEDULED"
+                                type_icon = "📱" if tp["type"] == "SMS" else "📧" if tp["type"] == "Email" else "📞"
+                                
+                                st.write(f"{status_icon} {type_icon} **Day {tp['day']} - {tp['type']}** - {tp.get('template', 'N/A')}")
+                                st.caption(f"Scheduled: {scheduled_time.strftime('%b %d, %I:%M %p')}")
+    
+    with tab2:
+        st.subheader("Create New Campaign")
+        
+        leads = st.session_state.lead_manager.get_all_leads()
+        
+        if not leads:
+            st.warning("No leads available. Import leads first.")
+        else:
+            # Create options from leads dictionary
+            lead_options = {}
+            lead_id_map = {}
+            for lead_id, lead in leads.items():
+                option_text = f"{lead.get('name', 'Unknown')} - ${lead.get('property_value', 0):,}"
+                lead_options[option_text] = lead
+                lead_id_map[option_text] = lead_id
+            
+            selected_lead_name = st.selectbox("Select Lead:", list(lead_options.keys()))
+            selected_lead = lead_options[selected_lead_name]
+            selected_lead_id = lead_id_map[selected_lead_name]
+            
+            campaign_type = st.radio(
+                "Campaign Type:",
+                ["new_lead_cashout", "responded"],
+                help="new_lead_cashout: 30-day nurture sequence\nresponded: Quick follow-up for engaged leads"
+            )
+            
+            # Show campaign preview
+            st.write("**Campaign Preview:**")
+            templates = st.session_state.campaign_manager.campaign_templates.get(campaign_type, [])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Touchpoints", len(templates))
+            with col2:
+                sms_count = sum(1 for tp in templates if tp.get("type") == "SMS")
+                st.metric("SMS Messages", sms_count)
+            with col3:
+                email_count = sum(1 for tp in templates if tp.get("type") == "Email")
+                st.metric("Emails", email_count)
+            
+            if st.button("🚀 Create & Start Campaign", type="primary"):
+                st.session_state.campaign_manager.create_campaign(selected_lead_id, campaign_type, selected_lead)
+                st.success(f"✅ Campaign created for {selected_lead.get('name')}!")
+                st.balloons()
+                st.session_state.view_mode = "campaigns"
+                st.rerun()
+    
+    with tab3:
+        st.subheader("Campaign Statistics")
+        
+        # Gather stats from all campaigns
+        campaigns = st.session_state.campaign_manager._load_all_campaigns()
+        
+        if not campaigns:
+            st.info("No campaigns yet. Create one to see statistics.")
+        else:
+            total_campaigns = len(campaigns)
+            active_campaigns = sum(1 for c in campaigns.values() if c.get("status") == "active")
+            total_touchpoints_sent = sum(len(c.get("completed_touchpoints", [])) for c in campaigns.values())
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Campaigns", total_campaigns)
+            with col2:
+                st.metric("Active Campaigns", active_campaigns)
+            with col3:
+                st.metric("Touchpoints Sent", total_touchpoints_sent)
+            with col4:
+                avg_completion = (total_touchpoints_sent / total_campaigns) if total_campaigns > 0 else 0
+                st.metric("Avg Touchpoints/Campaign", f"{avg_completion:.1f}")
+            
+            st.divider()
+            
+            # Campaign breakdown
+            st.write("**Campaign Breakdown:**")
+            for lead_id, campaign in campaigns.items():
+                status = campaign.get("status", "unknown")
+                completed = len(campaign.get("completed_touchpoints", []))
+                total = len(campaign.get("scheduled_touchpoints", []))
+                
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{lead_id}**")
+                with col2:
+                    st.write(f"{status}")
+                with col3:
+                    st.write(f"{completed}/{total}")
+
 else:
     # ==================== CHAT VIEW ====================
     st.header("💬 Chat with Phil's AI Assistant")
@@ -441,6 +627,31 @@ else:
         lead = st.session_state.lead_manager.get_lead(st.session_state.current_lead_id)
         if lead:
             st.info(f"📋 Currently working with: **{lead.get('name')}** (Lead ID: {st.session_state.current_lead_id})")
+            
+            # Auto-greet when lead is first loaded
+            if st.session_state.lead_just_loaded:
+                st.session_state.lead_just_loaded = False
+                
+                # Create a personalized greeting
+                name = lead.get('name', 'there')
+                first_name = name.split()[0] if name else 'there'
+                property_value = lead.get('property_value', 0)
+                cash_out = lead.get('cash_out_amount', 0)
+                
+                greeting = f"Hello {first_name}! I see you're interested in "
+                if cash_out > 0:
+                    greeting += f"a cash-out refinance to get ${cash_out:,} from your property valued at ${property_value:,}. "
+                else:
+                    greeting += f"refinancing your property valued at ${property_value:,}. "
+                
+                greeting += "I have your information loaded. How can I help you today? Would you like me to:\n\n"
+                greeting += "1. Generate your personalized 3-option mortgage proposal?\n"
+                greeting += "2. Answer questions about different loan options?\n"
+                greeting += "3. Explain the refinancing process?\n"
+                greeting += "4. Discuss rates and terms?\n\n"
+                greeting += "Just let me know what you'd like to explore!"
+                
+                st.session_state.messages.append({"role": "assistant", "content": greeting})
 
     # Display chat messages
     for message in st.session_state.messages:
@@ -490,6 +701,21 @@ else:
     if st.session_state.proposal_generated and st.session_state.lead_data:
         st.divider()
         st.header("📄 Your Personalized Mortgage Proposals")
+        
+        # Show summary of what we're calculating
+        name = st.session_state.lead_data.get("name", "Client")
+        property_value = st.session_state.lead_data.get("property_value", 0)
+        cash_out = st.session_state.lead_data.get("cash_out_amount", 0)
+        current_balance = st.session_state.lead_data.get("current_balance", 0)
+        is_veteran = st.session_state.lead_data.get("is_veteran", "no").lower() == "yes"
+        
+        st.success(f"""
+        ✅ **Proposal Generated for {name}**
+        - Property Value: ${property_value:,}
+        - Current Balance: ${current_balance:,}
+        - Cash Out Requested: ${cash_out:,}
+        - Veteran: {'Yes' if is_veteran else 'No'}
+        """)
         
         # Collect rates from sidebar
         rates_config = {

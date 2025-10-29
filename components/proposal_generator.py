@@ -43,24 +43,69 @@ class ProposalGenerator:
     
     def calculate_apr(self, loan_amount, interest_rate, loan_costs, term_months):
         """
-        Calculate APR (simplified version)
+        Calculate APR using industry-standard iterative method (Newton-Raphson)
         APR accounts for the total cost including fees
+        
+        The APR represents the true cost of borrowing by factoring in:
+        - Interest rate
+        - Loan costs/fees that reduce the amount you receive
+        - Time value of money over the loan term
         """
-        # Effective loan amount after fees
-        effective_amount = loan_amount - loan_costs
-        
         # Prevent division by zero
-        if effective_amount <= 0 or term_months <= 0:
-            return interest_rate  # Return base rate if calculation not possible
+        if loan_amount <= 0 or term_months <= 0:
+            return interest_rate
         
-        # This is a simplified APR calculation
-        # Real APR calculation is more complex
-        total_interest = (self.calculate_monthly_payment(loan_amount, interest_rate, term_months) * term_months) - loan_amount
-        total_cost = total_interest + loan_costs
+        # Amount actually received (loan amount minus fees)
+        net_loan_amount = loan_amount - loan_costs
         
-        apr = (total_cost / effective_amount / (term_months / 12)) * 100
+        if net_loan_amount <= 0:
+            return interest_rate
         
-        return apr
+        # Monthly payment based on full loan amount
+        monthly_payment = self.calculate_monthly_payment(loan_amount, interest_rate, term_months)
+        
+        # Use Newton-Raphson method to find APR
+        # We need to find the rate where: net_loan_amount = sum of discounted payments
+        
+        # Start with the base interest rate as initial guess
+        apr_guess = interest_rate / 100 / 12  # Convert to monthly decimal
+        
+        # Iterate to find accurate APR (max 50 iterations)
+        for _ in range(50):
+            # Calculate present value of all payments at current APR guess
+            if apr_guess <= 0:
+                apr_guess = interest_rate / 100 / 12
+                break
+            
+            pv = 0
+            for month in range(1, term_months + 1):
+                pv += monthly_payment / math.pow(1 + apr_guess, month)
+            
+            # Calculate derivative for Newton-Raphson
+            pv_prime = 0
+            for month in range(1, term_months + 1):
+                pv_prime += -month * monthly_payment / math.pow(1 + apr_guess, month + 1)
+            
+            # Check if we've converged
+            diff = pv - net_loan_amount
+            if abs(diff) < 0.01:  # Converged to within 1 cent
+                break
+            
+            # Newton-Raphson update
+            if pv_prime != 0:
+                apr_guess = apr_guess - diff / pv_prime
+            else:
+                break
+        
+        # Convert monthly rate back to annual percentage
+        annual_apr = apr_guess * 12 * 100
+        
+        # Sanity check: APR should be close to interest rate
+        # If it's way off, return interest rate
+        if annual_apr < interest_rate * 0.8 or annual_apr > interest_rate * 1.5:
+            return interest_rate
+        
+        return annual_apr
     
     def generate_cashout_primary(self):
         """Generate primary cash-out refinance option (FHA or VA based on veteran status)"""
